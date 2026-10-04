@@ -97,7 +97,7 @@ export default function Login() {
               <span className="text-white font-bold text-lg">R</span>
             </div>
             <div className="leading-tight">
-              <div className="text-lg font-semibold">RDX Showroom</div>
+              <div className="text-lg font-semibold">Vashu Hyundai</div>
               <div className="text-xs text-slate-400 tracking-wide">Vehicle Management System</div>
             </div>
           </div>

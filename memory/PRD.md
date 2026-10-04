@@ -167,5 +167,8 @@ Android IP Camera → Local Agent (Windows PC, YOLO + Gemini OCR)
 - Schedule: in-process loop, 24h interval, 1h startup grace, `RETENTION_ENABLED` kill switch (unset → enabled). Runtime logs confirm real purges.
 - **Open risks flagged (not fixed):** (1) `POST /api/maintenance/purge-expired` is any-role (not admin-only) and skips snapshot file cleanup; (2) active sessions with entry_time >180d would be purged (status not in filter).
 
+## Visual Edit (2026-10-04)
+- Login page brand label changed: "RDX Showroom" → "Vashu Hyundai" (`Login.jsx` login-card header only). Verified via screenshot: brand updated, form + Google sign-in intact, compiled clean. Note: left hero panel still references "RDX" in its tagline copy (not in edit scope).
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
