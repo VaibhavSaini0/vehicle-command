@@ -210,17 +210,23 @@ async def _persist_entry(
             {"vehicle_number": plate},
             sort=[("entry_time", -1)],
         )
-        if last and last.get("entry_time"):
+        if last:
             try:
-                last_dt = datetime.fromisoformat(last["entry_time"])
-                if (now - last_dt).total_seconds() < COOLDOWN_SECONDS:
-                    result.update({
-                        "duplicate": True,
-                        "event": "entry",
-                        "duplicate_reason": f"already logged within {COOLDOWN_SECONDS}s",
-                        "session_id": last.get("id"),
-                    })
-                    return result
+                # Duplicate suppression uses the most recent activity — exit_time
+                # when the last session already closed, else entry_time — so a car
+                # still sitting in view right after an EXIT cannot spawn a
+                # duplicate ENTRY within the cooldown window.
+                ref = last.get("exit_time") or last.get("entry_time")
+                if ref:
+                    ref_dt = datetime.fromisoformat(ref)
+                    if (now - ref_dt).total_seconds() < COOLDOWN_SECONDS:
+                        result.update({
+                            "duplicate": True,
+                            "event": "entry",
+                            "duplicate_reason": f"last activity within {COOLDOWN_SECONDS}s",
+                            "session_id": last.get("id"),
+                        })
+                        return result
             except Exception:
                 pass
 

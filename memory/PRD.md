@@ -170,5 +170,11 @@ Android IP Camera → Local Agent (Windows PC, YOLO + Gemini OCR)
 ## Visual Edit (2026-10-04)
 - Login page brand label changed: "RDX Showroom" → "Vashu Hyundai" (`Login.jsx` login-card header only). Verified via screenshot: brand updated, form + Google sign-in intact, compiled clean. Note: left hero panel still references "RDX" in its tagline copy (not in edit scope).
 
+## Bug Fix (2026-10-05 · Duplicate ENTRY after EXIT)
+### Post-exit re-entry suppression in `plate_pipeline._persist_entry`
+- **Root cause:** the ENTRY-side cooldown only checked the last session's `entry_time`. After an EXIT, a car still sitting in view (>30s past entry, but <30s past exit) spawned a duplicate ENTRY — entry/exit ping-pong.
+- **Fix (one block, `plate_pipeline.py` only):** the no-active-session cooldown now uses the most recent activity — `exit_time or entry_time` — so post-exit re-detections within the 30s cooldown are ignored as duplicates. Exit toggle logic, cooldown value (30s), schemas, and everything else unchanged. "No plate" frames never generate events (already true); OCR gaps can't close sessions (already true); a session can only be closed once (exit path acts only on active sessions).
+- **Verified (focused WS e2e, plate KADBZT4982):** [1] 4 rapid detections → exactly 1 ENTRY, 3 duplicates · [2] no-plate frames → stays INSIDE · [3] detection after 32s → exactly 1 EXIT (same session) · [4] 2 re-detections after EXIT → both suppressed (the fix) · [5] final state: exactly 1 session, exited, single entry+exit. Earlier red runs were test-harness artifacts (hot-reload race, WS idle-drop during the 32s sleep, cold object-storage upload exceeding the client's 10s ack timeout) — confirmed by frame-level debugging, not code bugs.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
