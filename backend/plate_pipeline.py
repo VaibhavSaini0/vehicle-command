@@ -17,6 +17,7 @@ message on `/api/agent/ws` we:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
@@ -38,6 +39,12 @@ os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
 # Minimum seconds between two events (of the same type) for the same plate.
 # Prevents the same car sitting in view from creating multiple sessions.
 COOLDOWN_SECONDS = 30
+
+# Process-wide lock serializing the read-check → write sequence in
+# _persist_entry so simultaneous detections (e.g. multiple agent WS
+# connections) can never create duplicate active sessions for one plate.
+# (Single uvicorn worker deployment — an in-process lock is sufficient.)
+_persist_lock = asyncio.Lock()
 
 # Safety guardrail: refuse to write new snapshots when the underlying disk
 # has less than this many MB free. Prevents the pipeline from filling the
@@ -141,6 +148,20 @@ def _master_public(master: dict) -> dict:
 
 
 async def _persist_entry(
+    db,
+    camera_id: str,
+    plate: str,
+    jpeg_frame: bytes,
+    plate_jpeg: Optional[bytes] = None,
+    confidence: str = "medium",
+) -> Dict[str, Any]:
+    """Race-safe wrapper: serializes persistence under a process-wide lock so
+    concurrent detections can never double-create an active session."""
+    async with _persist_lock:
+        return await _persist_entry_locked(db, camera_id, plate, jpeg_frame, plate_jpeg, confidence)
+
+
+async def _persist_entry_locked(
     db,
     camera_id: str,
     plate: str,

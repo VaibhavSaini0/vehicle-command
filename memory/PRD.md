@@ -176,5 +176,11 @@ Android IP Camera → Local Agent (Windows PC, YOLO + Gemini OCR)
 - **Fix (one block, `plate_pipeline.py` only):** the no-active-session cooldown now uses the most recent activity — `exit_time or entry_time` — so post-exit re-detections within the 30s cooldown are ignored as duplicates. Exit toggle logic, cooldown value (30s), schemas, and everything else unchanged. "No plate" frames never generate events (already true); OCR gaps can't close sessions (already true); a session can only be closed once (exit path acts only on active sessions).
 - **Verified (focused WS e2e, plate KADBZT4982):** [1] 4 rapid detections → exactly 1 ENTRY, 3 duplicates · [2] no-plate frames → stays INSIDE · [3] detection after 32s → exactly 1 EXIT (same session) · [4] 2 re-detections after EXIT → both suppressed (the fix) · [5] final state: exactly 1 session, exited, single entry+exit. Earlier red runs were test-harness artifacts (hot-reload race, WS idle-drop during the 32s sleep, cold object-storage upload exceeding the client's 10s ack timeout) — confirmed by frame-level debugging, not code bugs.
 
+## Bug Fix Hardening (2026-10-05 · Duplicate ENTRY race guard)
+### Race-proof ENTRY creation in `plate_pipeline._persist_entry`
+- Added process-wide `_persist_lock = asyncio.Lock()`; `_persist_entry` is now a thin wrapper that serializes `_persist_entry_locked` (the original logic, renamed unchanged). Concurrent detections across multiple agent WS connections can never double-create an active session. Single-worker deployment makes an in-process lock sufficient; no DB/index/schema change (a partial unique index was considered but plate `TEST0FFC9C` has 2 leftover synthetic active sessions which would block the build — left untouched per no-destructive-DB rule).
+- Guarantees verified: active session exists ⇒ NEVER another ENTRY (regardless of time); ENTRY only when no active session; EXIT toggle unchanged; no-plate frames create nothing; post-exit cooldown suppression intact.
+- Verified (focused WS e2e): 5 rapid detections → 1 ENTRY · 5 simultaneous connections (race) → exactly 1 ENTRY/session · after 32s inside → 1 EXIT (toggle) · immediate post-exit detection → suppressed · after exit cooldown → exactly 1 new ENTRY · final DB state correct.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.
