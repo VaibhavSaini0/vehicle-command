@@ -210,23 +210,11 @@ async def _persist_entry_locked(
     is_exit = active is not None
     event_kind = "exit" if is_exit else "entry"
 
-    # 3. Cooldown-dedup — same event type within COOLDOWN_SECONDS is treated
-    #    as a duplicate detection (car still sitting in view).
-    if is_exit:
-        # If the active session was just opened, ignore instant exits.
-        try:
-            open_dt = datetime.fromisoformat(active["entry_time"])
-            if (now - open_dt).total_seconds() < COOLDOWN_SECONDS:
-                result.update({
-                    "duplicate": True,
-                    "event": "entry",
-                    "duplicate_reason": f"active session opened within {COOLDOWN_SECONDS}s",
-                    "session_id": active.get("id"),
-                })
-                return result
-        except Exception:
-            pass
-    else:
+    # 3. Cooldown-dedup. ROOT RULE — ACTIVE SESSION WINS: when an active
+    #    session exists, the detection is ALWAYS an EXIT of that same session;
+    #    the cooldown must never convert it into a duplicate/'entry' outcome.
+    #    The cooldown only suppresses a brand-new ENTRY right after a completed EXIT.
+    if not is_exit:
         last = await db.visit_sessions.find_one(
             {"vehicle_number": plate},
             sort=[("entry_time", -1)],

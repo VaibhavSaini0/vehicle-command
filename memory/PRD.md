@@ -182,5 +182,15 @@ Android IP Camera → Local Agent (Windows PC, YOLO + Gemini OCR)
 - Guarantees verified: active session exists ⇒ NEVER another ENTRY (regardless of time); ENTRY only when no active session; EXIT toggle unchanged; no-plate frames create nothing; post-exit cooldown suppression intact.
 - Verified (focused WS e2e): 5 rapid detections → 1 ENTRY · 5 simultaneous connections (race) → exactly 1 ENTRY/session · after 32s inside → 1 EXIT (toggle) · immediate post-exit detection → suppressed · after exit cooldown → exactly 1 new ENTRY · final DB state correct.
 
+## Bug Fix (2026-10-05 · ACTIVE SESSION WINS — exit-blocking cooldown removed)
+### Root cause + fix
+- **Root cause of "repeated ENTRY instead of EXIT":** `_persist_entry`'s exit-path cooldown returned `duplicate, event='entry'` whenever the active session was <30s old — so the second detection of a car never EXITed and every ack said "entry".
+- **Fix (2 files, minimal):**
+  - `plate_pipeline.py` `_persist_entry_locked`: deleted the is_exit cooldown branch. Detection with an active session now ALWAYS exits that same session (`exit_time`, `exit_camera`, `exit_image`, `exit_plate_image`, `exit_confidence`, `duration_seconds`, `status="completed"` via update_one — no insert). Post-exit re-ENTRY cooldown (30s, uses `exit_time`) retained — cooldown only applies AFTER an exit completes. Race safety: `_persist_lock` (asyncio) wrapper + DB re-check inside the lock (from the previous fix) unchanged.
+  - `server.py` WS `plate_detected` handler: NO-PLATE rule hardened — empty, <5 chars, or non-alphanumeric plates are skipped entirely (no ENTRY/EXIT/session change).
+- **ENTRY creation paths audited:** (1) ANPR `_persist_entry_locked` (fixed); (2) `POST /api/vehicles/entry` manual — no active-session guard (operator action, left unchanged per minimal scope); (3) `POST /api/vehicles` legacy create — manual record, unchanged; (4) `POST /api/platescan` auto_action="entry" — no guard, unchanged; (5) demo seed insert_many — startup-only. ⚠️ Paths 2 & 4 can still create a second active session if an operator deliberately uses them while a vehicle is inside.
+- **Verified A–G:** A) 1 detection → 1 active ✓ B) 10 rapid → exactly 1 ENTRY, 1 EXIT same session, 8 suppressed, 1 session total ✓ C) 5 concurrent connections → exactly 1 ENTRY/session ✓ D) detection after 32s → EXIT same session completed ✓ E) immediate 2nd detection (within old 30s cooldown) → EXIT, cooldown does not block ✓ F) empty/invalid plates → no event, no ack, no change ✓ G) after completed + cooldown → exactly 1 new ENTRY (1 exited + 1 inside) ✓
+- Historical records untouched; no schema change; UI/CAM-01/local_agent/YOLO/EasyOCR/storage/retention/backups/WhatsApp/email/auth/routing/deployment all untouched.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

@@ -1942,7 +1942,9 @@ async def ws_agent(websocket: WebSocket, agent_id: Optional[str] = Query(default
                 b64 = msg.get("crop_jpeg_b64", "")
                 plate_b64 = msg.get("plate_jpeg_b64", "")
                 confidence = msg.get("confidence", "medium")
-                if not cam_id or not plate:
+                # NO PLATE rule: empty/invalid/OCR-unconfirmed plates are ignored
+                # entirely — no ENTRY, no EXIT, no session change.
+                if not cam_id or not plate or len(plate) < 5 or not plate.isalnum():
                     continue
                 try:
                     crop_jpeg = _b64.b64decode(b64) if b64 else b""
