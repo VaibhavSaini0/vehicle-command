@@ -192,5 +192,16 @@ Android IP Camera → Local Agent (Windows PC, YOLO + Gemini OCR)
 - **Verified A–G:** A) 1 detection → 1 active ✓ B) 10 rapid → exactly 1 ENTRY, 1 EXIT same session, 8 suppressed, 1 session total ✓ C) 5 concurrent connections → exactly 1 ENTRY/session ✓ D) detection after 32s → EXIT same session completed ✓ E) immediate 2nd detection (within old 30s cooldown) → EXIT, cooldown does not block ✓ F) empty/invalid plates → no event, no ack, no change ✓ G) after completed + cooldown → exactly 1 new ENTRY (1 exited + 1 inside) ✓
 - Historical records untouched; no schema change; UI/CAM-01/local_agent/YOLO/EasyOCR/storage/retention/backups/WhatsApp/email/auth/routing/deployment all untouched.
 
+## Bug Fix (2026-10-05 · ACTIVE SESSION WINS extended to manual ENTRY paths)
+### Manual duplicate-ENTRY guards
+- `server.py` only. New `_require_valid_plate()` helper (rejects empty/<5 chars/non-alnum → 400). All three manual ENTRY paths now check `{"vehicle_number": vn, "status": "active"}` under the shared `plate_pipeline._persist_lock` (import added) and reject with **409 `{error: "already_inside", session_id}`** when an active session exists:
+  1. `POST /api/vehicles/entry` — guarded
+  2. `POST /api/vehicles` legacy create — guarded ONLY when the new record is `inside` (historical `exited`/`pending` record creation unchanged)
+  3. `POST /api/platescan` `auto_action="entry"` — guarded; returns `{"type":"entry","duplicate":true,"error":...,"session_id"}` in `action_result` instead of inserting
+- Manual EXIT audit: `POST /api/vehicles/exit` already correct (closes same active session, 404 "No active session" otherwise, never creates ENTRY) — unchanged. `POST /api/platescan` auto-exit already correct — unchanged.
+- ANPR WS path from previous fix: untouched.
+- **Verified:** A) manual entry → 1 active ✓ B) repeat → 409 already_inside, still 1 active ✓ C) 2 concurrent entries → [200, 409], exactly 1 active ✓ D) manual exit → same session completed ✓ E) re-entry after exit → exactly 1 new active ✓ F) empty/invalid plates → 400/422, nothing created ✓ G) legacy create: inside-dup 409, historical exited allowed ✓ H) exit with no active → safe 404 ✓
+- ⚠️ Note: `/app/tests/test_entry_exit_e2e.py` asserts the OLD exit-blocking cooldown behavior (immediate re-detection = duplicate) — it is now intentionally stale and should be updated to the ACTIVE-SESSION-WINS behavior if re-run.
+
 ## Test Credentials
 See `/app/memory/test_credentials.md`.

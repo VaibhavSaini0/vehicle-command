@@ -28,7 +28,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 
 from camera_manager import camera_manager, CameraSourceConflict
-from plate_pipeline import _persist_entry
+from plate_pipeline import _persist_entry, _persist_lock
 from event_bus import event_bus
 
 # Optional integrations
@@ -527,33 +527,49 @@ async def upsert_master(*, vehicle_number: str, owner_name: Optional[str] = None
     return {**existing, **updates}
 
 
+def _require_valid_plate(vn: str) -> str:
+    """Reject empty/invalid plates — no ENTRY may be created from them."""
+    if not vn or len(vn) < 5 or not vn.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid or missing vehicle plate")
+    return vn
+
+
 @api.post("/vehicles/entry")
 async def record_entry(payload: EntryIn, user: dict = Depends(get_current_user)):
-    vn = normalize_plate(payload.vehicle_number)
-    master = await upsert_master(
-        vehicle_number=vn,
-        owner_name=payload.owner_name,
-        phone_number=payload.phone_number,
-        vehicle_model=payload.vehicle_model,
-        vehicle_image=payload.vehicle_image,
-    )
-    now = now_utc()
-    session = {
-        "id": str(uuid.uuid4()),
-        "vehicle_number": vn,
-        "entry_time": now.isoformat(),
-        "exit_time": None,
-        "visit_date": now.strftime("%Y-%m-%d"),
-        "duration_seconds": None,
-        "entry_camera": payload.entry_camera or "CAM 01",
-        "exit_camera": "",
-        "entry_image": payload.entry_image or "",
-        "exit_image": "",
-        "status": "active",
-        "created_at": now.isoformat(),
-    }
-    await db.visit_sessions.insert_one(session)
-    session.pop("_id", None)
+    vn = _require_valid_plate(normalize_plate(payload.vehicle_number))
+    async with _persist_lock:
+        # ACTIVE SESSION WINS — one normalized plate = at most one active session.
+        active = await db.visit_sessions.find_one({"vehicle_number": vn, "status": "active"})
+        if active:
+            raise HTTPException(status_code=409, detail={
+                "error": "already_inside",
+                "message": f"{vn} already has an active session",
+                "session_id": active.get("id"),
+            })
+        master = await upsert_master(
+            vehicle_number=vn,
+            owner_name=payload.owner_name,
+            phone_number=payload.phone_number,
+            vehicle_model=payload.vehicle_model,
+            vehicle_image=payload.vehicle_image,
+        )
+        now = now_utc()
+        session = {
+            "id": str(uuid.uuid4()),
+            "vehicle_number": vn,
+            "entry_time": now.isoformat(),
+            "exit_time": None,
+            "visit_date": now.strftime("%Y-%m-%d"),
+            "duration_seconds": None,
+            "entry_camera": payload.entry_camera or "CAM 01",
+            "exit_camera": "",
+            "entry_image": payload.entry_image or "",
+            "exit_image": "",
+            "status": "active",
+            "created_at": now.isoformat(),
+        }
+        await db.visit_sessions.insert_one(session)
+        session.pop("_id", None)
     return {"master": serialize_master(master), "session": serialize_session(session)}
 
 
@@ -879,7 +895,21 @@ async def create_vehicle(payload: VehicleIn, user: dict = Depends(get_current_us
         "notes": payload.notes or "",
         "created_at": now_utc().isoformat(),
     }
-    await db.visit_sessions.insert_one(doc)
+    if new_status == "active":
+        # ACTIVE SESSION WINS — guard applies only to new INSIDE records;
+        # historical (completed/pending) record creation stays unchanged.
+        _require_valid_plate(vn)
+        async with _persist_lock:
+            active = await db.visit_sessions.find_one({"vehicle_number": vn, "status": "active"})
+            if active:
+                raise HTTPException(status_code=409, detail={
+                    "error": "already_inside",
+                    "message": f"{vn} already has an active session",
+                    "session_id": active.get("id"),
+                })
+            await db.visit_sessions.insert_one(doc)
+    else:
+        await db.visit_sessions.insert_one(doc)
     doc.pop("_id", None)
     return await serialize_session_with_master(doc)
 
@@ -1447,25 +1477,34 @@ async def scan_plate(payload: PlateScanIn, user: dict = Depends(require_roles(*R
         action = payload.auto_action or "none"
         cam = payload.camera or "AI-CAM"
         if action == "entry":
-            await upsert_master(vehicle_number=plate)
-            now = now_utc()
-            session = {
-                "id": str(uuid.uuid4()),
-                "vehicle_number": normalize_plate(plate),
-                "entry_time": now.isoformat(),
-                "exit_time": None,
-                "visit_date": now.strftime("%Y-%m-%d"),
-                "duration_seconds": None,
-                "entry_camera": cam,
-                "exit_camera": "",
-                "entry_image": "",
-                "exit_image": "",
-                "status": "active",
-                "created_at": now.isoformat(),
-            }
-            await db.visit_sessions.insert_one(session)
-            session.pop("_id", None)
-            action_result = {"type": "entry", "session": serialize_session(session)}
+            vn_entry = normalize_plate(plate)
+            async with _persist_lock:
+                # ACTIVE SESSION WINS — never insert a second active session.
+                active = await db.visit_sessions.find_one({"vehicle_number": vn_entry, "status": "active"})
+                if active:
+                    action_result = {"type": "entry", "duplicate": True,
+                                     "error": "Vehicle already has an active session",
+                                     "session_id": active.get("id")}
+                else:
+                    await upsert_master(vehicle_number=plate)
+                    now = now_utc()
+                    session = {
+                        "id": str(uuid.uuid4()),
+                        "vehicle_number": vn_entry,
+                        "entry_time": now.isoformat(),
+                        "exit_time": None,
+                        "visit_date": now.strftime("%Y-%m-%d"),
+                        "duration_seconds": None,
+                        "entry_camera": cam,
+                        "exit_camera": "",
+                        "entry_image": "",
+                        "exit_image": "",
+                        "status": "active",
+                        "created_at": now.isoformat(),
+                    }
+                    await db.visit_sessions.insert_one(session)
+                    session.pop("_id", None)
+                    action_result = {"type": "entry", "session": serialize_session(session)}
         elif action == "exit":
             vn = normalize_plate(plate)
             sess = await db.visit_sessions.find_one({"vehicle_number": vn, "status": "active"}, sort=[("entry_time", -1)])
