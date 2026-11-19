@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
 import urllib.request
 from typing import Optional, Tuple, Union
 

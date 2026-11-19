@@ -11,10 +11,9 @@ import csv
 import json
 import uuid
 import logging
-import random
 import asyncio
 import secrets as pysecrets
-from datetime import datetime, timezone, timedelta, date as ddate
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal, Dict, Any, Tuple
 
 import bcrypt
@@ -26,7 +25,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depend
 from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, EmailStr
 
 from camera_manager import camera_manager, CameraSourceConflict
 from plate_pipeline import _persist_entry, _persist_lock, route_detection, local_date
@@ -68,8 +67,6 @@ TWILIO_TO_DEFAULT = os.environ.get("TWILIO_WHATSAPP_TO", "")
 
 RETENTION_DAYS = 180
 
-# Demo users + fake vehicles/visits are only created when explicitly asked for.
-SEED_DEMO = os.environ.get("SEED_DEMO", "false").strip().lower() in ("1", "true", "yes", "on")
 # Day boundaries ("today", daily reports, visit_date) use the showroom's timezone.
 APP_TZ = ZoneInfo(os.environ.get("APP_TIMEZONE", "Asia/Kolkata"))
 _WEAK_PASSWORDS = {"admin123", "admin", "password", "demo1234", "123456", "12345678", "changeme"}
@@ -1394,7 +1391,7 @@ async def _retention_loop(interval_hours: float = 24.0, startup_grace_seconds: f
             r = await db.visit_sessions.delete_many({"entry_time": {"$lt": cutoff}})
             removed_files = 0
             failed_files = 0
-            snap_dir = os.path.join(os.path.dirname(__file__), "snapshots")
+            from plate_pipeline import SNAPSHOTS_DIR as snap_dir
             for field, name in snapshots_to_delete:
                 fpath = os.path.join(snap_dir, name)
                 try:
@@ -1430,7 +1427,6 @@ async def purge_expired(user: dict = Depends(require_roles(*ROLE_ADMIN_ONLY))):
 
 # ===================== AI Number Plate Recognition =====================
 import re as _re
-import base64 as _base64
 
 _PLATE_RE = _re.compile(r"[A-Z]{2}\s*\d{1,2}\s*[A-Z]{1,3}\s*\d{3,4}")
 
@@ -2352,165 +2348,6 @@ async def seed_google_admin():
     logger.info("Seeded Google admin user: %s", email)
 
 
-async def seed_demo():
-    # Seed additional demo users
-    demo_users = [
-        {"name": "Rakesh Kumar", "email": "manager@rdx.com", "role": "manager"},
-        {"name": "Priya Sharma", "email": "security@rdx.com", "role": "security"},
-        {"name": "Aditya Patel", "email": "security2@rdx.com", "role": "security", "status": "inactive"},
-    ]
-    for u in demo_users:
-        if not await db.users.find_one({"email": u["email"]}):
-            await db.users.insert_one({
-                "name": u["name"],
-                "email": u["email"],
-                "role": u["role"],
-                "status": u.get("status", "active"),
-                "password_hash": hash_password("demo1234"),
-                "created_at": now_utc().isoformat(),
-                "last_login": (now_utc() - timedelta(hours=random.randint(1, 200))).isoformat(),
-            })
-        else:
-            # Ensure demo users always have the known 'demo1234' password (idempotent seed refresh)
-            existing = await db.users.find_one({"email": u["email"]})
-            if not verify_password("demo1234", existing["password_hash"]):
-                await db.users.update_one({"_id": existing["_id"]}, {"$set": {"password_hash": hash_password("demo1234")}})
-
-    # Legacy 'vehicles' collection migration was completed on the initial
-    # production deploy; the destructive drop_collection has been removed to
-    # ensure no future startup can accidentally delete data. If any stray
-    # legacy collection ever needs to be removed, do it via the mongo shell
-    # as an explicit, one-shot admin action.
-
-    if await db.vehicle_masters.count_documents({}) >= 15:
-        return
-
-    # Fresh seed of masters + rich session history
-    car_images = [
-        "https://images.unsplash.com/photo-1580273916550-e323be2ae537?auto=format&fit=crop&w=600&q=70",
-        "https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=600&q=70",
-        "https://images.unsplash.com/photo-1544636331-e26879cd4d9b?auto=format&fit=crop&w=600&q=70",
-        "https://images.unsplash.com/photo-1550355291-bbee04a92027?auto=format&fit=crop&w=600&q=70",
-        "https://images.unsplash.com/photo-1494976388531-d1058494cdd8?auto=format&fit=crop&w=600&q=70",
-        "https://images.unsplash.com/photo-1592840062661-eb6a4ef00cb4?auto=format&fit=crop&w=600&q=70",
-    ]
-    models = ["Hyundai Creta", "Hyundai Verna", "Hyundai i20", "Hyundai Tucson", "Hyundai Venue", "Hyundai Kona EV", "Hyundai Alcazar", "Hyundai Santro"]
-    first = ["Arjun", "Neha", "Rohit", "Kavya", "Vikram", "Sanya", "Aman", "Ishita", "Karan", "Meera", "Dev", "Anaya", "Raj", "Zara", "Yash"]
-    last = ["Sharma", "Verma", "Patel", "Singh", "Nair", "Iyer", "Khan", "Gupta", "Bose", "Chopra"]
-    states = ["KA", "MH", "DL", "TN", "UP", "HR", "KL", "GJ"]
-    cameras = ["CAM 01", "CAM 02", "CAM 03", "CAM 04"]
-
-    masters: List[Dict[str, Any]] = []
-    plates_seen = set()
-    for _ in range(22):
-        while True:
-            plate = f"{random.choice(states)}{random.randint(1, 99):02d}{random.choice(['AB','MH','KL','TN','DL','HR'])}{random.randint(1000, 9999)}"
-            if plate not in plates_seen:
-                plates_seen.add(plate)
-                break
-        masters.append({
-            "id": str(uuid.uuid4()),
-            "vehicle_number": plate,
-            "owner_name": f"{random.choice(first)} {random.choice(last)}",
-            "phone_number": f"+91 {random.randint(70, 99)}{random.randint(10000000, 99999999)}",
-            "vehicle_model": random.choice(models),
-            "vehicle_image": random.choice(car_images),
-            "customer_id": f"CUS-{pysecrets.token_hex(3).upper()}",
-            "created_at": (now_utc() - timedelta(days=random.randint(30, 170))).isoformat(),
-            "updated_at": now_utc().isoformat(),
-        })
-    # Include the demo plate from the problem statement (UP21AB1234) with the exact same schedule
-    showcase_number = "UP21AB1234"
-    if showcase_number not in plates_seen:
-        masters.insert(0, {
-            "id": str(uuid.uuid4()),
-            "vehicle_number": showcase_number,
-            "owner_name": "Aarav Malhotra",
-            "phone_number": "+91 9876543210",
-            "vehicle_model": "Hyundai Creta",
-            "vehicle_image": car_images[0],
-            "customer_id": "CUS-DEMO01",
-            "created_at": (now_utc() - timedelta(days=120)).isoformat(),
-            "updated_at": now_utc().isoformat(),
-        })
-
-    await db.vehicle_masters.insert_many(masters)
-
-    # Generate sessions: each master gets 3-25 completed sessions plus optionally an active session today
-    sessions: List[Dict[str, Any]] = []
-    today = start_of_day(now_utc())
-
-    for m in masters:
-        vn = m["vehicle_number"]
-        if vn == showcase_number:
-            # Exact schedule from the problem statement — 4 completed sessions today
-            plan = [
-                (8, 30, 9, 15),
-                (10, 20, 11, 10),
-                (13, 45, 15, 0),
-                (17, 10, 18, 30),
-            ]
-            for eh, em, xh, xm in plan:
-                e = today + timedelta(hours=eh, minutes=em)
-                x = today + timedelta(hours=xh, minutes=xm)
-                sessions.append(_make_session(vn, e, x, cameras))
-            # extra history
-            for d in range(1, 45):
-                base = today - timedelta(days=d)
-                for _ in range(random.randint(0, 3)):
-                    eh = random.randint(8, 18)
-                    em = random.randint(0, 59)
-                    length = random.randint(15, 180)
-                    e = base + timedelta(hours=eh, minutes=em)
-                    x = e + timedelta(minutes=length)
-                    sessions.append(_make_session(vn, e, x, cameras))
-            continue
-
-        # regular vehicles
-        history_days = random.randint(30, 170)
-        for d in range(0, history_days):
-            base = today - timedelta(days=d)
-            visits_this_day = random.choices([0, 1, 2, 3, 4], weights=[5, 4, 2, 1, 1])[0]
-            last_exit = None
-            for _ in range(visits_this_day):
-                eh = random.randint(8, 19) if last_exit is None else min(19, last_exit.hour + random.randint(1, 3))
-                em = random.randint(0, 59)
-                length = random.randint(10, 180)
-                e = base + timedelta(hours=eh, minutes=em)
-                x = e + timedelta(minutes=length)
-                last_exit = x
-                sessions.append(_make_session(vn, e, x, cameras))
-
-        # 20% chance of an active session today
-        if random.random() < 0.2:
-            e = today + timedelta(hours=random.randint(9, 17), minutes=random.randint(0, 59))
-            sessions.append(_make_session(vn, e, None, cameras))
-
-    # bulk insert in chunks
-    BATCH = 500
-    for i in range(0, len(sessions), BATCH):
-        await db.visit_sessions.insert_many(sessions[i:i + BATCH])
-    logger.info("Seeded %d masters and %d visit sessions", len(masters), len(sessions))
-
-
-def _make_session(vehicle_number: str, entry: datetime, exit_: Optional[datetime], cameras: List[str]) -> Dict[str, Any]:
-    duration = int((exit_ - entry).total_seconds()) if exit_ else None
-    return {
-        "id": str(uuid.uuid4()),
-        "vehicle_number": vehicle_number,
-        "entry_time": entry.isoformat(),
-        "exit_time": exit_.isoformat() if exit_ else None,
-        "visit_date": local_date(entry),
-        "duration_seconds": duration,
-        "entry_camera": random.choice(cameras),
-        "exit_camera": random.choice(cameras) if exit_ else "",
-        "entry_image": "",
-        "exit_image": "",
-        "status": "completed" if exit_ else "active",
-        "created_at": entry.isoformat(),
-    }
-
-
 async def ensure_indexes():
     await db.users.create_index("email", unique=True)
     await db.vehicle_masters.create_index("vehicle_number", unique=True)
@@ -2530,9 +2367,6 @@ async def startup():
     await ensure_indexes()
     await seed_admin()
     await seed_google_admin()
-    if SEED_DEMO:
-        logger.warning("SEED_DEMO=true — creating demo users (password demo1234) and FAKE vehicles/visits. Never enable this on real data.")
-        await seed_demo()
     if ADMIN_PASSWORD.lower() in _WEAK_PASSWORDS or len(ADMIN_PASSWORD) < 10:
         logger.warning("ADMIN_PASSWORD in .env is weak — anyone who guesses it gets full admin access. Change it, then restart.")
     # NOTE: YOLO/OCR now runs on the showroom PC via /app/local_agent —

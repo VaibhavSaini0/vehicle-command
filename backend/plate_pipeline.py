@@ -36,7 +36,7 @@ logger = logging.getLogger("rdx.plate_pipeline")
 logger.setLevel(logging.INFO)
 
 # Where automatic snapshots are written on disk. Served via /api/snapshots/<file>.
-SNAPSHOTS_DIR = os.path.join(os.path.dirname(__file__), "snapshots")
+SNAPSHOTS_DIR = os.environ.get("SNAPSHOTS_DIR", "").strip() or os.path.join(os.path.dirname(__file__), "snapshots")
 os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
 
 # Minimum seconds between two events (of the same type) for the same plate.

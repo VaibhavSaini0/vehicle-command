@@ -30,7 +30,7 @@ Ctrl+C stops it. If a port is left busy: `./stop.sh` (`./stop.sh --mongo` also s
 
 The admin account comes from `backend/.env` (`ADMIN_EMAIL`, `ADMIN_PASSWORD`, default `admin@rdx.com` / `admin123`) and is re-applied on every start. **Change `ADMIN_PASSWORD` to something strong** — the backend logs a warning while it's weak.
 
-Demo users and fake vehicles are no longer created unless you set `SEED_DEMO="true"` (for demos only — never on real data).
+The app never creates demo users or fake vehicles.
 
 ### Clean out old demo data (one time)
 
@@ -108,3 +108,16 @@ cd backend && .venv/bin/pytest tests -q
 | Login works but you're bounced back to /login | Open the app at `http://localhost:3000` (not 127.0.0.1) so cookies match `CORS_ORIGINS` |
 | `yarn install` fails on `@emergentbase/visual-edits` | Remove that line from `frontend/package.json` devDependencies — it's only Emergent's visual editor |
 | Port 3000/8001 in use | `./stop.sh` |
+
+## Running the tests
+
+```bash
+backend/.venv/bin/pip install -r requirements-dev.txt
+local_agent/.venv/bin/pip install -r requirements-dev.txt
+make check      # lint + all tests + frontend build
+make test       # tests only
+```
+
+Backend tests need MongoDB running locally (or set `TEST_MONGO_URL`). Each run
+uses its own temporary `vc_test_*` database and temporary snapshot folder, and
+deletes both when it finishes — your real data is never touched.
